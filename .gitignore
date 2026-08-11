@@ -1,0 +1,31 @@
+# Ambiente virtual / uv
+.venv/
+__pycache__/
+*.pyc
+
+# Dados (PaySim nao deve ser versionado)
+data/*.csv
+data/*.zip
+
+# Persistencia do ChromaDB (RAG)
+chroma_db/
+*.chroma/
+
+# Modelos e artefatos treinados
+*.pkl
+*.json.bak
+models/
+
+# Segredos
+.env
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Cache de testes
+.pytest_cache/
+
+# Editor / SO
+.vscode/
+.idea/
+.DS_Store

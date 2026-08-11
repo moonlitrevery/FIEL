@@ -1,0 +1,21 @@
+[project]
+name = "fraud-explainability"
+version = "0.1.0"
+description = "Assistente de explicabilidade de fraude (SHAP + RAG + LLM) com verificacao de fidelidade das explicacoes"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.121.0",
+    "chromadb>=1.5.9",
+    "pandas>=3.0.5",
+    "scikit-learn>=1.9.0",
+    "sentence-transformers>=5.7.0",
+    "shap>=0.51.0",
+    "streamlit>=1.61.1",
+    "xgboost>=3.2.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
