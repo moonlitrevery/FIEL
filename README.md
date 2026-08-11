@@ -48,9 +48,18 @@ para compensar o desbalanceamento de classes (fraude e menos de 1% dos
 casos). A metrica de avaliacao e AUC-PR (area sob a curva Precision-Recall),
 nao acuracia, por ser a metrica correta para datasets desbalanceados.
 
+## Avaliacao ponta a ponta
+
+src/evaluate.py roda o pipeline completo (SHAP + RAG + geracao da explicacao
+via Claude + verificacao de fidelidade) sobre uma amostra de transacoes do
+teste flagradas como suspeitas pelo modelo (tanto verdadeiros quanto falsos
+positivos), e salva um relatorio agregado em results/evaluation_report.json.
+Requer a variavel de ambiente ANTHROPIC_API_KEY configurada.
+
 ## Uso
 
     uv sync
     uv run python -m src.data_prep
     uv run python -m src.model
+    uv run python -m src.evaluate
     uv run python -m pytest
