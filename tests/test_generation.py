@@ -2,18 +2,19 @@
 Testes do modulo generation.
 
 As funcoes de formatacao de prompt e parsing de resposta sao puras e
-testadas diretamente. A chamada real a API Claude e testada com um cliente
-falso (que imita a interface client.messages.create), para nao depender de
-rede nem de uma chave de API valida nos testes automatizados - isso valida
-a logica de prefill/parsing do nosso lado, que e o que de fato escrevemos
-(a qualidade da resposta do modelo em si nao e algo que testes unitarios
-devem cobrir).
+testadas diretamente. A chamada real a API Gemini e testada com um cliente
+falso (que imita a interface client.models.generate_content), para nao
+depender de rede nem de uma chave de API valida nos testes automatizados -
+isso valida a logica de construcao da chamada e parsing do nosso lado, que e
+o que de fato escrevemos (a qualidade da resposta do modelo em si nao e algo
+que testes unitarios devem cobrir).
 """
 
 from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from google.genai import types
 
 from src.explain import FeatureContribution
 from src.generation import (
@@ -28,22 +29,22 @@ from src.generation import (
 from src.rag.retrieval import RetrievedCase
 
 
-class _FakeMessages:
+class _FakeModels:
     def __init__(self, response_text: str):
         self.response_text = response_text
         self.last_kwargs = None
 
-    def create(self, **kwargs):
+    def generate_content(self, **kwargs):
         self.last_kwargs = kwargs
-        return SimpleNamespace(content=[SimpleNamespace(text=self.response_text)])
+        return SimpleNamespace(text=self.response_text)
 
 
-class FakeAnthropicClient:
-    """Imita o suficiente da interface anthropic.Anthropic para os testes:
-    client.messages.create(**kwargs) -> objeto com .content[0].text"""
+class FakeGeminiClient:
+    """Imita o suficiente da interface google.genai.Client para os testes:
+    client.models.generate_content(**kwargs) -> objeto com .text"""
 
     def __init__(self, response_text: str):
-        self.messages = _FakeMessages(response_text)
+        self.models = _FakeModels(response_text)
 
 
 @pytest.fixture
@@ -117,14 +118,6 @@ def test_parse_llm_response_accepts_valid_json():
     assert result.acao_recomendada == "bloquear"
 
 
-def test_parse_llm_response_strips_markdown_fences():
-    raw = '```json\n{"narrativa": "texto", "features_citadas": [], "acao_recomendada": "revisar"}\n```'
-
-    result = parse_llm_response(raw)
-
-    assert result.acao_recomendada == "revisar"
-
-
 def test_parse_llm_response_raises_on_missing_keys():
     raw = '{"narrativa": "texto"}'
 
@@ -146,18 +139,15 @@ def test_parse_llm_response_raises_on_wrong_type_for_features_citadas():
         parse_llm_response(raw)
 
 
-def test_generate_explanation_uses_assistant_prefill_and_parses_result(
+def test_generate_explanation_uses_response_schema_and_parses_result(
     sample_row, sample_top_features, sample_similar_cases
 ):
-    # O cliente falso simula a resposta da API JA CONSIDERANDO o prefill "{"
-    # que generate_explanation envia como ultimo turno "assistant" - ou
-    # seja, a API so devolve a CONTINUACAO apos a chave de abertura.
-    fake_response_after_prefill = (
-        '"narrativa": "A transacao foi sinalizada por esvaziar a conta de origem.", '
+    fake_response_text = (
+        '{"narrativa": "A transacao foi sinalizada por esvaziar a conta de origem.", '
         '"features_citadas": ["error_balance_orig"], '
         '"acao_recomendada": "bloquear e contatar cliente"}'
     )
-    client = FakeAnthropicClient(fake_response_after_prefill)
+    client = FakeGeminiClient(fake_response_text)
 
     result = generate_explanation(
         row=sample_row,
@@ -170,7 +160,26 @@ def test_generate_explanation_uses_assistant_prefill_and_parses_result(
     assert result.features_citadas == ["error_balance_orig"]
     assert result.acao_recomendada == "bloquear e contatar cliente"
 
-    # O ultimo turno enviado a API deve ser o prefill "{" do assistente,
-    # tecnica usada para forcar a saida a comecar direto no JSON.
-    sent_messages = client.messages.last_kwargs["messages"]
-    assert sent_messages[-1] == {"role": "assistant", "content": "{"}
+    # A chamada deve pedir explicitamente saida JSON estruturada via schema,
+    # nao so confiar em instrucao textual no prompt.
+    sent_config = client.models.last_kwargs["config"]
+    assert sent_config.response_mime_type == "application/json"
+    assert sent_config.response_schema is not None
+    # thinking_level minimal: evita que o raciocinio interno do modelo
+    # consuma o orcamento de tokens que deveria ir para a resposta em JSON.
+    assert sent_config.thinking_config.thinking_level == types.ThinkingLevel.MINIMAL
+
+
+def test_generate_explanation_raises_clear_error_on_empty_response(
+    sample_row, sample_top_features, sample_similar_cases
+):
+    client = FakeGeminiClient(response_text="")
+
+    with pytest.raises(ValueError, match="Resposta vazia"):
+        generate_explanation(
+            row=sample_row,
+            predicted_probability=0.99,
+            top_features=sample_top_features,
+            similar_cases=sample_similar_cases,
+            client=client,
+        )

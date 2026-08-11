@@ -45,7 +45,7 @@ from src.rag.retrieval import index_case_library, retrieve_similar_cases_for_tra
 # dos dois for alterado no futuro.
 
 # Tamanho padrao de cada grupo da amostra avaliada. Numeros pequenos de
-# proposito: cada transacao avaliada custa 1 chamada real a API Claude: um
+# proposito: cada transacao avaliada custa 1 chamada real a API Gemini: um
 # numero grande deixaria a avaliacao lenta e cara sem agregar muito rigor
 # estatistico extra a uma metrica que ja e bem estavel (ver relatorio final).
 DEFAULT_N_TRUE_POSITIVES = 15
@@ -297,5 +297,5 @@ def run_evaluation(
 
 if __name__ == "__main__":
     # Execucao manual: `uv run python -m src.evaluate`
-    # Requer ANTHROPIC_API_KEY configurada e data/paysim.csv presente.
+    # Requer GEMINI_API_KEY configurada e data/paysim.csv presente.
     run_evaluation()

@@ -4,7 +4,7 @@ Testes do modulo evaluate.
 Reaproveita um pequeno pipeline sintetico (dados -> modelo -> explainer ->
 biblioteca RAG indexada em diretorio temporario) montado uma vez por modulo
 (mais custoso: treina um XGBoost e indexa embeddings), e testa a logica de
-selecao de amostra, execucao por transacao (com um cliente Claude falso) e
+selecao de amostra, execucao por transacao (com um cliente Gemini falso) e
 agregacao do relatorio final isoladamente.
 """
 
@@ -29,20 +29,23 @@ from src.model import train_model
 from src.rag.retrieval import index_case_library
 
 
-class _FakeMessages:
+class _FakeModels:
     def __init__(self, response_text=None, exception=None):
         self.response_text = response_text
         self.exception = exception
 
-    def create(self, **kwargs):
+    def generate_content(self, **kwargs):
         if self.exception is not None:
             raise self.exception
-        return SimpleNamespace(content=[SimpleNamespace(text=self.response_text)])
+        return SimpleNamespace(text=self.response_text)
 
 
-class FakeAnthropicClient:
+class FakeGeminiClient:
+    """Imita o suficiente da interface google.genai.Client para os testes:
+    client.models.generate_content(**kwargs) -> objeto com .text"""
+
     def __init__(self, response_text=None, exception=None):
-        self.messages = _FakeMessages(response_text=response_text, exception=exception)
+        self.models = _FakeModels(response_text=response_text, exception=exception)
 
 
 def make_raw_paysim_like_df(n: int = 400, fraud_rate: float = 0.1, seed: int = 42) -> pd.DataFrame:
@@ -148,9 +151,9 @@ def test_evaluate_single_transaction_success_labels_fraud_as_verdadeiro_positivo
     fixture = pipeline_fixture
     fraud_index = fixture.y_test[fixture.y_test == 1].index[0]
 
-    fake_client = FakeAnthropicClient(
+    fake_client = FakeGeminiClient(
         response_text=(
-            '"narrativa": "explicacao de teste", '
+            '{"narrativa": "explicacao de teste", '
             '"features_citadas": ["error_balance_orig"], '
             '"acao_recomendada": "bloquear"}'
         )
@@ -173,8 +176,8 @@ def test_evaluate_single_transaction_labels_legit_as_falso_positivo(pipeline_fix
     fixture = pipeline_fixture
     legit_index = fixture.y_test[fixture.y_test == 0].index[0]
 
-    fake_client = FakeAnthropicClient(
-        response_text='"narrativa": "x", "features_citadas": [], "acao_recomendada": "liberar"}'
+    fake_client = FakeGeminiClient(
+        response_text='{"narrativa": "x", "features_citadas": [], "acao_recomendada": "liberar"}'
     )
 
     result = evaluate_single_transaction(
@@ -190,7 +193,7 @@ def test_evaluate_single_transaction_captures_api_errors_without_raising(pipelin
     fixture = pipeline_fixture
     fraud_index = fixture.y_test[fixture.y_test == 1].index[0]
 
-    fake_client = FakeAnthropicClient(exception=RuntimeError("falha simulada de rede"))
+    fake_client = FakeGeminiClient(exception=RuntimeError("falha simulada de rede"))
 
     result = evaluate_single_transaction(
         fraud_index, fixture.df_test, fixture.X_test, fixture.model, fixture.explainer, fixture.collection,
@@ -207,8 +210,8 @@ def test_evaluate_sample_runs_pipeline_for_multiple_indices(pipeline_fixture):
     fixture = pipeline_fixture
     indices = list(fixture.y_test.index[:3])
 
-    fake_client = FakeAnthropicClient(
-        response_text='"narrativa": "x", "features_citadas": [], "acao_recomendada": "revisar"}'
+    fake_client = FakeGeminiClient(
+        response_text='{"narrativa": "x", "features_citadas": [], "acao_recomendada": "revisar"}'
     )
 
     results = evaluate_sample(

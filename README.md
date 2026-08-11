@@ -18,7 +18,7 @@ as features citadas na explicação com as top features do SHAP).
 - Python 3.11+, gerenciado via uv (https://docs.astral.sh/uv/)
 - xgboost, shap, scikit-learn, pandas
 - sentence-transformers + chromadb (RAG)
-- anthropic (geração da explicação via Claude)
+- google-genai (geração da explicação via Gemini)
 - streamlit (dashboard de demonstração)
 - pytest (testes)
 
@@ -36,7 +36,7 @@ Baixe o CSV e coloque em data/paysim.csv (não versionado no git).
     |-- rag/
     |   |-- case_library.py # serializa fraudes confirmadas do treino em docs
     |   \-- retrieval.py    # embeddings + chromadb + busca por similaridade
-    |-- generation.py        # prompt + chamada a API Claude, saida em JSON
+    |-- generation.py        # prompt + chamada a API Gemini, saida JSON estruturada
     |-- faithfulness.py      # comparacao features citadas vs. SHAP real
     \-- evaluate.py           # roda o pipeline completo num conjunto de teste
     app.py                    # dashboard Streamlit
@@ -51,10 +51,10 @@ nao acuracia, por ser a metrica correta para datasets desbalanceados.
 ## Avaliacao ponta a ponta
 
 src/evaluate.py roda o pipeline completo (SHAP + RAG + geracao da explicacao
-via Claude + verificacao de fidelidade) sobre uma amostra de transacoes do
+via Gemini + verificacao de fidelidade) sobre uma amostra de transacoes do
 teste flagradas como suspeitas pelo modelo (tanto verdadeiros quanto falsos
 positivos), e salva um relatorio agregado em results/evaluation_report.json.
-Requer a variavel de ambiente ANTHROPIC_API_KEY configurada.
+Requer a variavel de ambiente GEMINI_API_KEY configurada (gere uma chave gratuita em https://aistudio.google.com/app/apikey).
 
 ## Uso
 
@@ -63,3 +63,9 @@ Requer a variavel de ambiente ANTHROPIC_API_KEY configurada.
     uv run python -m src.model
     uv run python -m src.evaluate
     uv run python -m pytest
+    uv run python -m streamlit run app.py
+
+Nota (Windows): use sempre "python -m streamlit" (nao so "streamlit" /
+"uv run streamlit") - o executavel .venv\Scripts\streamlit.exe gerado pelo
+uv pode falhar com "uv trampoline failed to canonicalize script path"
+(bug conhecido do uv no Windows). "python -m streamlit" contorna o problema.

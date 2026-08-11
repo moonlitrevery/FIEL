@@ -238,7 +238,7 @@ def aggregate_faithfulness_results(results: list[FaithfulnessResult]) -> Aggrega
 
 
 if __name__ == "__main__":
-    # Execucao manual com um exemplo ilustrativo (sem depender da API Claude):
+    # Execucao manual com um exemplo ilustrativo (sem depender da API Gemini):
     # `uv run python -m src.faithfulness`
     real_top = [
         FeatureContribution(feature_name="error_balance_orig", feature_value=0.0, shap_value=5.6),

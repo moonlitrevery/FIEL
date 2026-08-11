@@ -18,9 +18,9 @@ from __future__ import annotations
 
 import os
 
-import anthropic
 import pandas as pd
 import streamlit as st
+from google import genai
 
 from src.data_prep import load_raw_data, prepare_train_test_split
 from src.evaluate import get_or_train_model, select_flagged_transactions
@@ -98,14 +98,15 @@ def render_sidebar() -> dict:
     )
 
     st.sidebar.divider()
-    st.sidebar.subheader("Chave da API Claude")
-    env_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    st.sidebar.subheader("Chave da API Gemini")
+    env_key = os.environ.get("GEMINI_API_KEY", os.environ.get("GOOGLE_API_KEY", ""))
     api_key = st.sidebar.text_input(
-        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
         value=env_key,
         type="password",
         help="Necessaria apenas para gerar a explicacao em linguagem natural. "
-        "As secoes de SHAP e RAG funcionam sem ela.",
+        "As secoes de SHAP e RAG funcionam sem ela. Gere uma chave gratuita em "
+        "https://aistudio.google.com/app/apikey",
     )
 
     return {"fast_mode": fast_mode, "api_key": api_key}
@@ -249,12 +250,12 @@ def main() -> None:
     generate_clicked = st.button(
         "Gerar explicacao",
         disabled=not controls["api_key"],
-        help=None if controls["api_key"] else "Informe a ANTHROPIC_API_KEY na barra lateral para habilitar.",
+        help=None if controls["api_key"] else "Informe a GEMINI_API_KEY na barra lateral para habilitar.",
     )
 
     if generate_clicked:
-        client = anthropic.Anthropic(api_key=controls["api_key"])
-        with st.spinner("Chamando a API Claude..."):
+        client = genai.Client(api_key=controls["api_key"])
+        with st.spinner("Chamando a API Gemini..."):
             try:
                 generated = generate_explanation(
                     row=full_row,

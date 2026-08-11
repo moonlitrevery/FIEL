@@ -1,45 +1,80 @@
 """
-Geracao da explicacao em linguagem natural via LLM (Claude), grounded em SHAP + RAG.
+Geracao da explicacao em linguagem natural via LLM (Gemini), grounded em SHAP + RAG.
 
-Este modulo monta o prompt que da ao LLM (Claude) exatamente os fatos que ele
-pode usar - os valores SHAP reais da transacao (explain.py) e os casos de
-fraude confirmada mais similares (rag/retrieval.py) - e nunca deixa o modelo
-"inventar" contexto. A saida e SEMPRE um JSON estruturado com 3 campos fixos
-(narrativa, features_citadas, acao_recomendada), nunca texto livre: e isso
-que torna o verificador de fidelidade (faithfulness.py) viavel sem precisar
-de NLP sofisticado para extrair afirmacoes de um texto solto - basta comparar
-a lista de strings em "features_citadas" com os nomes das top features do SHAP.
+Este modulo monta o prompt que da ao LLM (Google Gemini) exatamente os fatos
+que ele pode usar - os valores SHAP reais da transacao (explain.py) e os
+casos de fraude confirmada mais similares (rag/retrieval.py) - e nunca deixa
+o modelo "inventar" contexto. A saida e SEMPRE um JSON estruturado com 3
+campos fixos (narrativa, features_citadas, acao_recomendada), nunca texto
+livre: e isso que torna o verificador de fidelidade (faithfulness.py) viavel
+sem precisar de NLP sofisticado para extrair afirmacoes de um texto solto -
+basta comparar a lista de strings em "features_citadas" com os nomes das top
+features do SHAP.
+
+Usamos o modo de saida estruturada NATIVO da API Gemini (response_schema),
+em vez de so pedir "responda em JSON" via prompt: o proprio servidor forca a
+saida a seguir o schema informado, o que e mais robusto do que confiar
+apenas em instrucao textual.
 """
 
 from __future__ import annotations
 
 import json
 import os
-import re
 from dataclasses import dataclass
 
-import anthropic
 import pandas as pd
+from google import genai
+from google.genai import types
 
 from src.data_prep import get_feature_columns
 from src.explain import FeatureContribution
 from src.rag.retrieval import RetrievedCase
 
-# Claude Sonnet 5: bom equilibrio entre qualidade de raciocinio e custo/latencia
-# para gerar explicacoes de texto curto. Pode ser trocado por um modelo mais
-# barato (ex: um Haiku) durante testes/desenvolvimento sem mudar nenhuma outra
-# parte do pipeline, ja que o nome do modelo esta centralizado aqui.
-MODEL_NAME = "claude-sonnet-5"
+# Gemini 3.6 Flash: modelo "flash" (rapido e barato) mais recente e estavel
+# no momento em que este projeto foi desenvolvido - equilibrio adequado para
+# gerar explicacoes de texto curto em varias transacoes de teste sem custo
+# proibitivo. Pode ser trocado por outro modelo da familia Gemini sem mudar
+# nenhuma outra parte do pipeline, ja que o nome do modelo esta centralizado
+# aqui.
+MODEL_NAME = "gemini-3.6-flash"
 
-MAX_TOKENS = 1024
+# Modelos da familia Gemini 3 "pensam" antes de responder por padrao
+# (raciocinio interno que tambem consome tokens do limite de saida). Para
+# esta tarefa - extrair uma explicacao factual a partir de dados ja
+# fornecidos (SHAP + RAG), sem raciocinio matematico ou multi-etapas -
+# "minimal" e suficiente. Sem isso, o raciocinio por padrao ("medium")
+# consumia boa parte do orcamento de max_output_tokens so em pensamento
+# interno, cortando a resposta JSON pela metade (erro de "unterminated
+# string" / JSON invalido) antes mesmo de o modelo terminar de escrever.
+THINKING_LEVEL = types.ThinkingLevel.MINIMAL
 
-# Temperatura 0: queremos respostas o mais deterministicas possivel. Isso e
+# Folga generosa acima do que a resposta (narrativa curta + lista de features
+# + acao recomendada) realmente precisa, para sobrar espaco tanto para
+# eventuais tokens de raciocinio residual quanto para a resposta em si.
+MAX_OUTPUT_TOKENS = 4096
+
+# Temperatura 0: queremos respostas o mais deterministicas possiveis. Isso e
 # especialmente importante aqui porque o verificador de fidelidade
 # (faithfulness.py) mede a taxa de acerto do LLM ao citar features reais do
 # SHAP - com temperatura alta, essa taxa variaria a cada execucao so por
 # aleatoriedade da amostragem de tokens, nao por uma mudanca real na
 # qualidade da explicacao.
 TEMPERATURE = 0
+
+# Schema (formato compativel com um subconjunto do OpenAPI/JSON Schema) que
+# forca a API Gemini a retornar exatamente estes 3 campos, com estes tipos.
+# Usar response_schema (em vez de so pedir JSON via texto) elimina quase por
+# completo o risco de a resposta vir com texto extra antes/depois do JSON.
+RESPONSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "narrativa": {"type": "string"},
+        "features_citadas": {"type": "array", "items": {"type": "string"}},
+        "acao_recomendada": {"type": "string"},
+    },
+    "required": ["narrativa", "features_citadas", "acao_recomendada"],
+}
 
 SYSTEM_PROMPT = """Voce e um assistente especializado em explicar, para analistas humanos de uma instituicao financeira, por que um modelo de deteccao de fraude (XGBoost) sinalizou uma transacao como suspeita.
 
@@ -52,12 +87,8 @@ Voce recebe, para uma unica transacao:
 Regras obrigatorias, sem excecao:
 - Baseie sua explicacao APENAS nos dados SHAP e nos casos similares fornecidos abaixo. Nunca invente valores, nomes de features, numeros ou casos que nao estejam explicitamente nos dados fornecidos.
 - No campo "features_citadas" da sua resposta, inclua APENAS identificadores escolhidos dentre esta lista fixa de nomes de features do modelo: {feature_columns}. Cite ali as features que voce efetivamente usou como justificativa na narrativa.
-- Sua resposta deve ser SOMENTE um objeto JSON valido, sem nenhum texto, comentario ou markdown antes ou depois. Use exatamente este formato:
-{{
-  "narrativa": "explicacao em portugues, clara e objetiva, para um analista nao tecnico, de por que a transacao foi sinalizada",
-  "features_citadas": ["nome_da_feature_1", "nome_da_feature_2"],
-  "acao_recomendada": "uma recomendacao curta e concreta (ex: bloquear e contatar cliente, revisao manual, liberar com monitoramento)"
-}}"""
+- O campo "narrativa" deve ser em portugues, claro e objetivo, escrito para um analista nao tecnico.
+- O campo "acao_recomendada" deve ser uma recomendacao curta e concreta (ex: bloquear e contatar cliente, revisao manual, liberar com monitoramento)."""
 
 
 @dataclass
@@ -77,21 +108,23 @@ class GeneratedExplanation:
         }
 
 
-def get_anthropic_client() -> anthropic.Anthropic:
-    """Cria o cliente da API Claude a partir da variavel de ambiente ANTHROPIC_API_KEY.
+def get_gemini_client() -> genai.Client:
+    """Cria o cliente da API Gemini a partir de uma chave gerada no Google AI
+    Studio (https://aistudio.google.com/app/apikey).
 
-    Falha de forma explicita (em vez de deixar o erro cru da biblioteca
-    anthropic aparecer) para deixar claro qual variavel de ambiente precisa
-    ser configurada.
+    Aceita a chave tanto em GEMINI_API_KEY quanto em GOOGLE_API_KEY (nome
+    usado internamente pelo SDK) para nao depender de qual convencao a
+    documentacao do Google usou por ultimo. Falha de forma explicita se
+    nenhuma das duas estiver definida.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
     if not api_key:
         raise RuntimeError(
-            "Variavel de ambiente ANTHROPIC_API_KEY nao configurada. "
-            "Defina-a antes de gerar explicacoes, ex. no PowerShell: "
-            "$env:ANTHROPIC_API_KEY = 'sua-chave-aqui'"
+            "Variavel de ambiente GEMINI_API_KEY (ou GOOGLE_API_KEY) nao configurada. "
+            "Gere uma chave gratuita em https://aistudio.google.com/app/apikey e defina-a, "
+            "ex. no PowerShell: $env:GEMINI_API_KEY = 'sua-chave-aqui'"
         )
-    return anthropic.Anthropic(api_key=api_key)
+    return genai.Client(api_key=api_key)
 
 
 def format_transaction_summary(row: pd.Series) -> str:
@@ -142,30 +175,21 @@ def build_user_prompt(
         f"{format_shap_features(top_features)}\n\n"
         f"CASOS DE FRAUDE CONFIRMADA SIMILARES (recuperados do historico real de fraudes):\n"
         f"{format_similar_cases(similar_cases)}\n\n"
-        "Gere a explicacao seguindo exatamente o formato JSON e as regras definidas."
+        "Gere a explicacao seguindo o schema JSON e as regras definidas."
     )
-
-
-def _strip_markdown_fences(text: str) -> str:
-    """Remove blocos de markdown (```json ... ```) que o modelo eventualmente
-    inclua ao redor do JSON, apesar da instrucao para nao faze-lo."""
-    match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, re.DOTALL)
-    return match.group(1) if match else text
 
 
 def parse_llm_response(raw_text: str) -> GeneratedExplanation:
     """Converte o texto bruto retornado pela API em um GeneratedExplanation.
 
-    Valida que o JSON tem exatamente as 3 chaves esperadas, com os tipos
-    corretos. Levanta ValueError com uma mensagem clara (incluindo o texto
-    bruto) se o LLM nao seguir o formato - isso nao deveria acontecer com o
-    prefill do turno do assistente (ver generate_explanation), mas e
-    importante falhar de forma legivel em vez de um KeyError/JSONDecodeError cru.
+    Mesmo com response_schema forcando o formato no lado do servidor, ainda
+    validamos aqui (chaves e tipos) antes de confiar no conteudo - defesa em
+    profundidade contra qualquer resposta inesperada (ex: erro da API
+    retornado como texto simples), com uma mensagem de erro legivel em vez
+    de um KeyError/JSONDecodeError cru.
     """
-    cleaned_text = _strip_markdown_fences(raw_text.strip())
-
     try:
-        payload = json.loads(cleaned_text)
+        payload = json.loads(raw_text.strip())
     except json.JSONDecodeError as error:
         raise ValueError(
             f"Resposta do LLM nao e um JSON valido: {error}\nTexto bruto recebido:\n{raw_text}"
@@ -198,42 +222,48 @@ def generate_explanation(
     predicted_probability: float,
     top_features: list[FeatureContribution],
     similar_cases: list[RetrievedCase],
-    client: anthropic.Anthropic | None = None,
+    client: genai.Client | None = None,
 ) -> GeneratedExplanation:
     """Gera a explicacao em linguagem natural para uma transacao suspeita.
 
-    Usa a tecnica de "prefill" do turno do assistente: comecamos a resposta
-    do modelo com o caractere "{" (via uma mensagem com role="assistant"),
-    o que praticamente forca a API a continuar direto no JSON, sem preambulo
-    ou explicacao textual antes dele. O texto retornado pela API e a
-    CONTINUACAO apos o "{" que fornecemos, entao ele e reanexado antes do
-    parsing em parse_llm_response.
+    Usa response_mime_type="application/json" + response_schema para forcar
+    a saida estruturada no lado do servidor Gemini, em vez de depender so de
+    instrucao textual no prompt. thinking_level="minimal" evita que o
+    raciocinio interno do modelo consuma o orcamento de tokens que deveria
+    ir para a resposta.
     """
-    client = client or get_anthropic_client()
+    client = client or get_gemini_client()
 
     system_prompt = SYSTEM_PROMPT.format(feature_columns=get_feature_columns())
     user_prompt = build_user_prompt(row, predicted_probability, top_features, similar_cases)
 
-    response = client.messages.create(
+    response = client.models.generate_content(
         model=MODEL_NAME,
-        max_tokens=MAX_TOKENS,
-        temperature=TEMPERATURE,
-        system=system_prompt,
-        messages=[
-            {"role": "user", "content": user_prompt},
-            {"role": "assistant", "content": "{"},
-        ],
+        contents=user_prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=TEMPERATURE,
+            max_output_tokens=MAX_OUTPUT_TOKENS,
+            response_mime_type="application/json",
+            response_schema=RESPONSE_SCHEMA,
+            thinking_config=types.ThinkingConfig(thinking_level=THINKING_LEVEL),
+        ),
     )
 
-    completion = response.content[0].text
-    full_json_text = "{" + completion
+    if not response.text:
+        candidates = getattr(response, "candidates", None) or []
+        finish_reason = candidates[0].finish_reason if candidates else None
+        raise ValueError(
+            f"Resposta vazia da API Gemini (finish_reason={finish_reason}). "
+            "Possivel corte por limite de tokens ou filtro de seguranca."
+        )
 
-    return parse_llm_response(full_json_text)
+    return parse_llm_response(response.text)
 
 
 if __name__ == "__main__":
     # Execucao manual: `uv run python -m src.generation`
-    # Requer ANTHROPIC_API_KEY configurada no ambiente.
+    # Requer GEMINI_API_KEY configurada no ambiente.
     from src.data_prep import load_raw_data, prepare_train_test_split
     from src.explain import build_explainer, explain_transaction
     from src.model import load_model
@@ -256,7 +286,7 @@ if __name__ == "__main__":
     collection = index_case_library(df_train, max_cases=500)
     similar_cases = retrieve_similar_cases_for_transaction(full_row, collection, k=3)
 
-    print("Chamando a API Claude para gerar a explicacao...")
+    print("Chamando a API Gemini para gerar a explicacao...")
     result = generate_explanation(
         row=full_row,
         predicted_probability=predicted_probability,
