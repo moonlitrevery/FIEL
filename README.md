@@ -1,6 +1,6 @@
 # fraud-explainability
 
-Assistente de explicabilidade de fraude (TCC / disciplina de IA Generativa).
+Assistente de explicabilidade de fraude (disciplina de IA).
 
 Dado uma transação flagrada como suspeita por um classificador XGBoost,
 o sistema gera uma explicação em linguagem natural (via LLM) fundamentada em:
